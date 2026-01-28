@@ -3,29 +3,127 @@ name: Codex Issue Bot (PoC)
 on:
   issue_comment:
     types: [created]
+  issues:
+    types: [opened, edited]
 
 permissions:
-  issues: write
   contents: read
+  issues: write
+
+concurrency:
+  group: codex-issue-${{ github.event.issue.number }}
+  cancel-in-progress: false
 
 jobs:
   codex:
-    # Gate: only run on /codex and only for allowlisted users
+    # Gate:
+    # - allow only repo owner (you) for PoC
+    # - allow /codex either in issue body OR in a new comment
     if: >
-      startsWith(github.event.comment.body, '/codex') &&
-      (github.actor == 'hewrin')
+      github.actor == 'hewrin' &&
+      github.event.sender.type != 'Bot' &&
+      (
+        (github.event_name == 'issue_comment' && startsWith(github.event.comment.body, '/codex')) ||
+        (github.event_name == 'issues' && startsWith(github.event.issue.body, '/codex'))
+      )
+
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
+      - name: Checkout (optional)
         uses: actions/checkout@v4
 
-      - name: Build prompt + call OpenAI
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Build question + call OpenAI (Responses API)
+        id: openai
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          EVENT_NAME: ${{ github.event_name }}
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
           REPO: ${{ github.repository }}
-          COMMENT: ${{ github.event.comment.body }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ACTOR: ${{ github.actor }}
         run: |
-          echo "Do OpenAI API call here"
-          echo "Then comment back on the issue"
+          set -euo pipefail
+
+          # Pick source text depending on event type
+          SOURCE_TEXT=""
+          if [ "$EVENT_NAME" = "issue_comment" ]; then
+            SOURCE_TEXT="${COMMENT_BODY:-}"
+          elif [ "$EVENT_NAME" = "issues" ]; then
+            SOURCE_TEXT="${ISSUE_BODY:-}"
+          else
+            echo "Unsupported event: $EVENT_NAME" >&2
+            exit 1
+          fi
+
+          # Strip leading "/codex" to get question
+          QUESTION="$(printf '%s' "$SOURCE_TEXT" | sed -e 's/^\/codex[[:space:]]*//')"
+          if [ -z "$QUESTION" ]; then
+            echo "No question provided after /codex" >&2
+            exit 1
+          fi
+
+          PAYLOAD=$(
+            jq -n \
+              --arg repo "$REPO" \
+              --arg issue_title "$ISSUE_TITLE" \
+              --arg issue_body "${ISSUE_BODY:-}" \
+              --arg question "$QUESTION" \
+              --arg actor "$ACTOR" \
+              --arg event_name "$EVENT_NAME" \
+              '{
+                model: "gpt-5.2-codex",
+                reasoning: { effort: "low" },
+                max_output_tokens: 600,
+                input: [
+                  {
+                    role: "developer",
+                    content: "You are replying as a GitHub Issue bot. Be concise and actionable. If you need code context, ask for specific file paths."
+                  },
+                  {
+                    role: "user",
+                    content:
+                      ("Repo: " + $repo + "\n\n" +
+                       "Event: " + $event_name + "\n\n" +
+                       "Issue title: " + $issue_title + "\n\n" +
+                       "Issue body:\n" + (if ($issue_body|length) > 0 then $issue_body else "(empty)" end) + "\n\n" +
+                       "Question from " + $actor + ":\n" + $question)
+                  }
+                ]
+              }'
+          )
+
+          RESPONSE_JSON="$(curl -sS https://api.openai.com/v1/responses \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $OPENAI_API_KEY" \
+            -d "$PAYLOAD")"
+
+          ANSWER="$(printf '%s' "$RESPONSE_JSON" | jq -r '.output_text // empty')"
+
+          if [ -z "$ANSWER" ]; then
+            echo "No output_text returned. Raw response:" >&2
+            echo "$RESPONSE_JSON" >&2
+            exit 1
+          fi
+
+          {
+            echo "answer<<EOF"
+            echo "$ANSWER"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Post reply as issue comment
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ANSWER: ${{ steps.openai.outputs.answer }}
+        run: |
+          set -euo pipefail
+          BODY="**Codex reply:**\n\n${ANSWER}\n\n—\nTriggered by \`/codex\`."
+          gh api "repos/${REPO}/issues/${ISSUE_NUMBER}/comments" -f body="$BODY"
