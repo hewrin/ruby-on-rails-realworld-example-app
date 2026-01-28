@@ -83,59 +83,59 @@ jobs:
           Rails model files (app/models):
           ${MODEL_FILES:-"(none found)"}"
 
-                    PAYLOAD="$(jq -n \
-                      --arg system "$SYSTEM_PROMPT" \
-                      --arg user "$USER_PROMPT" \
-                      '{
-                        model: "gpt-5.2-codex",
-                        reasoning: { effort: "low" },
-                        max_output_tokens: 700,
-                        input: [
-                          { role: "developer", content: $system },
-                          { role: "user", content: $user }
-                        ]
-                      }'
-                    )"
+          PAYLOAD="$(jq -n \
+            --arg system "$SYSTEM_PROMPT" \
+            --arg user "$USER_PROMPT" \
+            '{
+              model: "gpt-5.2-codex",
+              reasoning: { effort: "low" },
+              max_output_tokens: 700,
+              input: [
+                { role: "developer", content: $system },
+                { role: "user", content: $user }
+              ]
+            }'
+          )"
 
-                    RESPONSE_JSON="$(curl -sS https://api.openai.com/v1/responses \
-                      -H "Content-Type: application/json" \
-                      -H "Authorization: Bearer $OPENAI_API_KEY" \
-                      -d "$PAYLOAD")"
+          RESPONSE_JSON="$(curl -sS https://api.openai.com/v1/responses \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $OPENAI_API_KEY" \
+            -d "$PAYLOAD")"
 
-                    # Robust extraction of assistant text
-                    ANSWER="$(
-                      printf '%s' "$RESPONSE_JSON" | jq -r '
-                        .output_text
-                        // ([
-                          .output[]?
-                          | select(.type=="message")
-                          | .content[]?
-                          | select(.type=="output_text")
-                          | .text
-                        ] | join("\n"))
-                        // empty
-                      '
-                    )"
+          # Robust extraction of assistant text
+          ANSWER="$(
+            printf '%s' "$RESPONSE_JSON" | jq -r '
+              .output_text
+              // ([
+                .output[]?
+                | select(.type=="message")
+                | .content[]?
+                | select(.type=="output_text")
+                | .text
+              ] | join("\n"))
+              // empty
+            '
+          )"
 
-                    if [ -z "$ANSWER" ]; then
-                      echo "No assistant text returned" >&2
-                      echo "$RESPONSE_JSON" >&2
-                      exit 1
-                    fi
+          if [ -z "$ANSWER" ]; then
+            echo "No assistant text returned" >&2
+            echo "$RESPONSE_JSON" >&2
+            exit 1
+          fi
 
-                    {
-                      echo "answer<<EOF"
-                      echo "$ANSWER"
-                      echo "EOF"
-                    } >> "$GITHUB_OUTPUT"
+          {
+            echo "answer<<EOF"
+            echo "$ANSWER"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
-                - name: Post reply as issue comment
-                  env:
-                    GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-                    REPO: ${{ github.repository }}
-                    ISSUE_NUMBER: ${{ github.event.issue.number }}
-                    ANSWER: ${{ steps.openai.outputs.answer }}
-                  run: |
-                    set -euo pipefail
-                    BODY="**Codex reply:**\n\n${ANSWER}\n\n—\nTriggered by \`/codex\`"
-                    gh api "repos/${REPO}/issues/${ISSUE_NUMBER}/comments" -f body="$BODY"
+      - name: Post reply as issue comment
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ANSWER: ${{ steps.openai.outputs.answer }}
+        run: |
+          set -euo pipefail
+          BODY="**Codex reply:**\n\n${ANSWER}\n\n—\nTriggered by \`/codex\`"
+          gh api "repos/${REPO}/issues/${ISSUE_NUMBER}/comments" -f body="$BODY"
