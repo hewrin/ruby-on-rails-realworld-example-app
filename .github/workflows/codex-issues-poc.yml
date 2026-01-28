@@ -33,10 +33,11 @@ jobs:
       - name: Install jq
         run: sudo apt-get update && sudo apt-get install -y jq
 
-      - name: Build prompt + call OpenAI
+      - name: Build prompt + call OpenAI (with all issue comments)
         id: openai
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           EVENT_NAME: ${{ github.event_name }}
           ISSUE_TITLE: ${{ github.event.issue.title }}
           ISSUE_BODY: ${{ github.event.issue.body }}
@@ -61,27 +62,56 @@ jobs:
             exit 1
           fi
 
-          # Cheap useful context: list model files
+          # Cheap context: list model files (optional but helpful)
           MODEL_FILES="$(ls -1 app/models 2>/dev/null | head -n 200 || true)"
 
+          # Pull ALL issue comments (paginate)
+          # Output format: one block per comment with author + timestamp + body
+          COMMENTS_JSON="$(gh api --paginate "repos/${REPO}/issues/${ISSUE_NUMBER}/comments")"
+
+          # Turn comments JSON into a single plain-text transcript
+          COMMENTS_TEXT="$(
+            printf '%s' "$COMMENTS_JSON" | jq -r '
+              sort_by(.created_at) |
+              map(
+                "-----\n" +
+                (.user.login // "unknown") + " @ " + (.created_at // "unknown") + "\n" +
+                (.body // "")
+              ) | join("\n\n")
+            '
+          )"
+
+          # Safety cap: conversations can get huge. We still fetch all comments,
+          # but we truncate what we SEND to the model to avoid token blowups.
+          # Increase/decrease as you like.
+          MAX_CHARS=45000
+          if [ "${#COMMENTS_TEXT}" -gt "$MAX_CHARS" ]; then
+            COMMENTS_TEXT="(Truncated to last ${MAX_CHARS} chars of the issue comment thread)\n\n${COMMENTS_TEXT: -$MAX_CHARS}"
+          fi
+
           SYSTEM_PROMPT="You are a GitHub Issue assistant.
-          Be concise and practical.
-          Use the provided Rails model list when answering structure questions.
-          If you need more context, ask for specific file paths."
+Continue the conversation using the full issue thread provided.
+Be concise and practical.
+If you need more code context, ask for specific file paths."
 
-                    USER_PROMPT="Repository: ${REPO}
+          USER_PROMPT="Repository: ${REPO}
 
-          Issue title:
-          ${ISSUE_TITLE}
+Event: ${EVENT_NAME}
 
-          Issue body:
-          ${ISSUE_BODY:-"(empty)"}
+Issue title:
+${ISSUE_TITLE}
 
-          Question from ${ACTOR}:
-          ${QUESTION}
+Issue body:
+${ISSUE_BODY:-"(empty)"}
 
-          Rails model files (app/models):
-          ${MODEL_FILES:-"(none found)"}"
+All issue comments (chronological):
+${COMMENTS_TEXT:-"(no comments found)"}
+
+Rails model files (app/models):
+${MODEL_FILES:-"(none found)"}
+
+New question from ${ACTOR}:
+${QUESTION}"
 
           PAYLOAD="$(jq -n \
             --arg system "$SYSTEM_PROMPT" \
@@ -89,7 +119,7 @@ jobs:
             '{
               model: "gpt-5.2-codex",
               reasoning: { effort: "low" },
-              max_output_tokens: 700,
+              max_output_tokens: 800,
               input: [
                 { role: "developer", content: $system },
                 { role: "user", content: $user }
@@ -137,5 +167,10 @@ jobs:
           ANSWER: ${{ steps.openai.outputs.answer }}
         run: |
           set -euo pipefail
-          BODY="**Codex reply:**\n\n${ANSWER}\n\n—\nTriggered by \`/codex\`"
+          BODY="**Codex reply:**
+
+${ANSWER}
+
+—
+Triggered by \`/codex\`"
           gh api "repos/${REPO}/issues/${ISSUE_NUMBER}/comments" -f body="$BODY"
