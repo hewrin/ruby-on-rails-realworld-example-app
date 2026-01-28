@@ -1,0 +1,31 @@
+name: Codex Issue Bot (PoC)
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  codex:
+    # Gate: only run on /codex and only for allowlisted users
+    if: >
+      startsWith(github.event.comment.body, '/codex') &&
+      (github.actor == 'hewrin')
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build prompt + call OpenAI
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          REPO: ${{ github.repository }}
+          COMMENT: ${{ github.event.comment.body }}
+        run: |
+          echo "Do OpenAI API call here"
+          echo "Then comment back on the issue"
