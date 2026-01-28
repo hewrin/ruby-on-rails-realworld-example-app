@@ -89,29 +89,18 @@ jobs:
             COMMENTS_TEXT="(Truncated to last ${MAX_CHARS} chars of the issue comment thread)\n\n${COMMENTS_TEXT: -$MAX_CHARS}"
           fi
 
-          SYSTEM_PROMPT="You are a GitHub Issue assistant.
-Continue the conversation using the full issue thread provided.
-Be concise and practical.
-If you need more code context, ask for specific file paths."
+          SYSTEM_PROMPT="You are a GitHub Issue assistant."
+          SYSTEM_PROMPT+=$'\nContinue the conversation using the full issue thread provided.'
+          SYSTEM_PROMPT+=$'\nBe concise and practical.'
+          SYSTEM_PROMPT+=$'\nIf you need more code context, ask for specific file paths.'
 
-          USER_PROMPT="Repository: ${REPO}
-
-Event: ${EVENT_NAME}
-
-Issue title:
-${ISSUE_TITLE}
-
-Issue body:
-${ISSUE_BODY:-"(empty)"}
-
-All issue comments (chronological):
-${COMMENTS_TEXT:-"(no comments found)"}
-
-Rails model files (app/models):
-${MODEL_FILES:-"(none found)"}
-
-New question from ${ACTOR}:
-${QUESTION}"
+          USER_PROMPT="Repository: ${REPO}"
+          USER_PROMPT+=$'\n\nEvent: '"${EVENT_NAME}"
+          USER_PROMPT+=$'\n\nIssue title:\n'"${ISSUE_TITLE}"
+          USER_PROMPT+=$'\n\nIssue body:\n'"${ISSUE_BODY:-"(empty)"}"
+          USER_PROMPT+=$'\n\nAll issue comments (chronological):\n'"${COMMENTS_TEXT:-"(no comments found)"}"
+          USER_PROMPT+=$'\n\nRails model files (app/models):\n'"${MODEL_FILES:-"(none found)"}"
+          USER_PROMPT+=$'\n\nNew question from '"${ACTOR}"$':\n'"${QUESTION}"
 
           PAYLOAD="$(jq -n \
             --arg system "$SYSTEM_PROMPT" \
@@ -167,10 +156,7 @@ ${QUESTION}"
           ANSWER: ${{ steps.openai.outputs.answer }}
         run: |
           set -euo pipefail
-          BODY="**Codex reply:**
-
-${ANSWER}
-
-—
-Triggered by \`/codex\`"
+          BODY="**Codex reply:**"
+          BODY+=$'\n\n'"${ANSWER}"
+          BODY+=$'\n\n—\nTriggered by `'"'/codex'"'`'
           gh api "repos/${REPO}/issues/${ISSUE_NUMBER}/comments" -f body="$BODY"
